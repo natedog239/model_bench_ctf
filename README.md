@@ -51,9 +51,7 @@ MODEL LEADERBOARD (from history DB)
 
 ## TUI demo
 
-<video src="tui.webm" controls width="100%"></video>
-
-If the video doesn't play inline, [download/view tui.webm](tui.webm).
+![TUI demo](tui.gif)
 
 ## Architecture
 
