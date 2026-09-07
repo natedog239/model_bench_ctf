@@ -100,3 +100,23 @@ MODEL LEADERBOARD (from history DB)
 | 24 | Qwen3.8-27B-DFlash2-BF16.gguf | ERROR | - | 2026-09-07 00:13:23 | gone |
 | 25 | Qwen3.8-27B-DFlash2-Q4_K_M.gguf | ERROR | - | 2026-09-07 00:13:23 | gone |
 | 26 | Qwen3.8-27B-DFlash2-Q8_0.gguf | ERROR | - | 2026-09-07 00:13:23 | gone |
+
+## GGUF Quantization & Model Flag Reference
+
+| Category | Tag / Flag | 1-Sentence Explanation |
+| :--- | :--- | :--- |
+| **Precision & Standard Quants** | **`BF16`** | Stores weights in unquantized 16-bit brain floating-point format to preserve original model quality without loss. |
+| | **`Q8_0`** | Applies straightforward 8-bit quantization across all tensors, serving as a virtually lossless baseline with minimal overhead. |
+| | **`Q6_K`** | Employs 6-bit k-quants across model layers to deliver output virtually indistinguishable from 16-bit precision. |
+| | **`Q6_K_L`** | Allocates 6-bit quantization with an even higher precision bias on key tensors than standard Q6_K to maximize fidelity. |
+| | **`Q4_0`** | Implements basic, uniform 4-bit block quantization across all model matrices for legacy compatibility. |
+| | **`Q4_K_M`** | Uses 4-bit k-quants with mixed precision on critical attention/feed-forward layers, serving as the standard sweet spot for quality and speed. |
+| **Importance Matrix (I-Quants)** | **`IQ4_XS`** | Combines importance-matrix calibration with compact 4-bit packing for lower perplexity loss than legacy 4-bit quants at a small footprint. |
+| | **`IQ3_XXS`** | Uses an importance matrix to aggressively compress weights down to an ultra-compact ~3-bit footprint for extreme memory savings. |
+| | **`IQ2_M`** | Leverages an importance matrix to achieve usable 2-bit inference by protecting critical weights identified during calibration. |
+| **Dynamic Quantization Modifiers** | **`UD-`** | Denotes Unsloth Dynamic quantization, which dynamically varies bit-depth layer-by-layer based on measured tensor sensitivity. |
+| | **`_XL`** | Indicates an extra-large dynamic quant variant that boosts key attention and feed-forward layers to higher bitwidths for near-tier-above quality. |
+| **Training & Fine-Tuning** | **`qat` / `QAT`** | Indicates Quantization-Aware Training was used during fine-tuning so the model learned to compensate for precision loss beforehand. |
+| | **`it` / `Instruct`** | Marks an instruction-tuned checkpoint optimized for conversational chat, system prompting, and task execution rather than raw text completion. |
+| **Architectural Features & Acceleration** | **`MTP`** | Contains the Multi-Token Prediction speculative drafting heads used to predict several tokens in parallel during inference. |
+| | **`DFlash2`** | Denotes integration or optimization with FlashAttention-2 / dynamic block-sparse attention mechanisms for high-throughput context handling. |
