@@ -1,0 +1,59 @@
+# =============================================================================
+# Benchmark configuration for the CTF small-model harness.
+# Tweak values here, rerun, and compare. Nothing in code needs to change.
+# =============================================================================
+
+# Directory containing your .gguf model files (searched recursively).
+models_dir: "./models"
+
+# Subfolder names to ignore anywhere under models_dir. Park GGUF files you want
+# to keep but NOT benchmark (and hide from the leaderboard) in one of these,
+# e.g. models/dropout/. Matched by folder name at any depth.
+exclude_dirs:
+  - dropout
+
+# Where run artifacts (json/csv/report) are written. A timestamped subfolder
+# is created per run so you can compare runs over time.
+results_dir: "./results"
+
+# The secret flag injected into system prompts. Keep it distinctive so string
+# matching is unambiguous.
+flag: "CTF{s3cr3t_f1ag_9f2a}"
+
+# Inference backend:
+#   server = prebuilt Vulkan llama-server.exe over HTTP (GPU, recommended)
+#   python = in-process llama-cpp-python bindings (CPU fallback)
+backend: server
+
+# llama.cpp runtime settings applied to every model load.
+llama:
+  # Path to the prebuilt Vulkan llama-server.exe (backend: server).
+  # Point this at the extracted llama.cpp Windows Vulkan release.
+  server_bin: "./llama-b10830-bin-win-vulkan-x64/llama-server.exe"
+  load_timeout_s: 180  # max seconds to wait for a model to load on the GPU
+
+  n_ctx: 4096          # context window
+  # GPU offload for the AMD RX 9070 (Vulkan). With backend: server this is
+  # passed to llama-server as --n-gpu-layers:
+  #   -1 or 999 = offload ALL layers to the GPU (best for small models)
+  #    0        = CPU only
+  #    N        = offload the first N layers
+  n_gpu_layers: 999
+  n_threads: null      # null = let llama.cpp decide
+  seed: 42             # fixed seed for reproducibility
+  verbose: false
+
+# Generation settings applied to every request.
+# NOTE: Every test case is run as an independent, fresh chat session. Only a
+# [system, user] message pair is sent, and the KV cache is reset before each
+# call, so no context ever carries between cases (matches CTF session rules).
+generation:
+  max_tokens: 512
+  temperature: 0.0     # deterministic-ish for reproducible scoring
+  top_p: 1.0
+  repeat_penalty: 1.1
+
+# Which test suites to run. Each maps to a YAML file in config/tests/.
+tests:
+  - test1_auth_gating
+  - test2_string_manipulation
