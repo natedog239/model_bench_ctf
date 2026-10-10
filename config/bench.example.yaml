@@ -1,0 +1,144 @@
+# =============================================================================
+# Benchmark configuration for the CTF small-model harness. (EXAMPLE)
+#
+# Copy this file to config/bench.yaml and fill in your own values. The real
+# config/bench.yaml is gitignored so your infrastructure details (hostnames,
+# IPs, paths) stay out of version control.
+# =============================================================================
+
+# Directory containing your .gguf model files (searched recursively).
+models_dir: "./models"
+
+# Subfolder names to ignore anywhere under models_dir. Park GGUF files you want
+# to keep but NOT benchmark (and hide from the leaderboard) in one of these,
+# e.g. models/dropout/. Matched by folder name at any depth.
+exclude_dirs:
+  - dropout
+
+# Where run artifacts (json/csv/report) are written. A timestamped subfolder
+# is created per run so you can compare runs over time.
+results_dir: "./results"
+
+# The secret flag injected into system prompts. Keep it distinctive so string
+# matching is unambiguous.
+flag: "CTF{example_flag_change_me}"
+
+# Inference backend:
+#   server = prebuilt Vulkan llama-server.exe over HTTP (GPU, recommended)
+#   python = in-process llama-cpp-python bindings (CPU fallback)
+#   remote = a llama-server ALREADY RUNNING on another machine on your network
+#            (the harness does not start it; see the `remote:` block below)
+#   ssh    = the harness orchestrates llama-server on a remote host over SSH:
+#            it discovers the remote model library, then starts/health-checks/
+#            stops one server per model automatically (see the `ssh:` block).
+backend: server
+
+# Settings for backend: remote. You must start llama-server on the other box
+# yourself first (the harness has no shell there), e.g. on that machine:
+#   llama-server --model <model>.gguf --n-gpu-layers 999 --host 0.0.0.0 --port 8080
+# One running server hosts ONE model, so a remote run benchmarks whatever model
+# that server currently has loaded. To test another model, restart the remote
+# server with a different --model and run again.
+remote:
+  base_url: "http://REMOTE_HOST_IP:8080"  # the other machine's IP + port
+  model_name: "remote-model"              # label shown in reports/leaderboard
+  size_bytes: 0                           # optional; 0 = unknown/not reported
+  api_key: null                           # optional bearer token if fronted by a proxy
+  load_timeout_s: 180                     # how long to wait for /health to be ok
+
+# Settings for backend: ssh. The harness runs the llama-server lifecycle on a
+# remote GPU box for you: it lists the remote *.gguf library, then for each
+# model it SSH-launches llama-server, health-checks it over HTTP, benchmarks it,
+# and kills it before loading the next. Requires non-interactive (key-based)
+# SSH, e.g. a `Host myhost` alias in ~/.ssh/config so `ssh myhost` connects
+# without a password prompt.
+ssh:
+  host: "my-ssh-host"                     # ssh host or ~/.ssh/config alias
+  user: null                              # optional; omit if the alias sets it
+  port: null                              # optional ssh port (default 22)
+  server_bin: "/path/to/llama.cpp/build/bin/llama-server"
+  models_dir: "/path/to/models"           # remote dir searched for *.gguf
+  # NOTE: http_host must be DNS/IP-resolvable by THIS machine's HTTP client.
+  # An ~/.ssh/config Host alias is only known to the ssh client, not the OS
+  # resolver, so use the box's IP (or a real hostname) here.
+  http_host: "REMOTE_HOST_IP"             # host the harness sends HTTP to
+  http_port: 8080                         # port llama-server listens on remotely
+
+  # GPU selection. If the remote box has multiple Vulkan devices, pin one by
+  # name here (run `llama-server --list-devices` on the box to see them), e.g.:
+  #   Vulkan1 = a large-VRAM card (preferred for big models)
+  #   Vulkan0 = a smaller card (only fits small models)
+  # Set to null to let llama.cpp pick (it typically defaults to Vulkan0).
+  device: "Vulkan1"
+
+  # VRAM budget: context length is bounded by (usable VRAM - weights - compute
+  # buffers). With q8_0 KV quantization (below, ~0.5MB/tok for a typical model)
+  # KV cache is roughly halved vs f16, letting large contexts fit. --fit (below)
+  # trims rather than OOM if a value is too large; load the model and use the
+  # serve mode [s]tats command to see the ctx /props actually loaded. Also check
+  # the model's NATIVE trained context -- going beyond it forces RoPE scaling
+  # and degrades quality regardless of VRAM.
+  n_ctx: 8192
+  n_gpu_layers: 999                       # 999 = offload all layers
+  fit: true                               # pass --fit on as an OOM safety net
+
+  # KV-cache quantization + Flash Attention. q8_0 roughly halves KV memory vs
+  # f16, which is what makes 32K+ contexts fit. llama.cpp requires Flash
+  # Attention for a quantized KV cache, so flash_attn is enabled implicitly when
+  # a cache type is set (set it explicitly to 'on'/'off'/'auto' to override).
+  # Set cache types to null to fall back to full f16 KV.
+  cache_type_k: null
+  cache_type_v: null
+  flash_attn: null
+  n_threads: null                         # optional CPU threads for host ops
+  load_timeout_s: 300                     # big models load slowly; allow 5 min
+  # --jinja uses each model's own chat template (from GGUF metadata), required
+  # for correct tool/function-call parsing. On by default. Set false only if a
+  # model's bundled template is broken and you don't have a replacement.
+  jinja: true
+  # Optional: override a model's bundled chat template with a file ON THE REMOTE
+  # HOST (useful when a GGUF ships a broken template). null = use the model's.
+  chat_template_file: null
+
+# llama.cpp runtime settings applied to every model load.
+llama:
+  # Path to the prebuilt Vulkan llama-server.exe (backend: server).
+  # Point this at the extracted llama.cpp Windows Vulkan release.
+  server_bin: "./llama-bin-win-vulkan-x64/llama-server.exe"
+  load_timeout_s: 180  # max seconds to wait for a model to load on the GPU
+
+  n_ctx: 4096          # context window
+  # GPU offload (Vulkan). With backend: server this is passed to llama-server
+  # as --n-gpu-layers:
+  #   -1 or 999 = offload ALL layers to the GPU (best for small models)
+  #    0        = CPU only
+  #    N        = offload the first N layers
+  n_gpu_layers: 999
+  n_threads: null      # null = let llama.cpp decide
+  # --jinja uses the model's own chat template, required for tool/function-call
+  # parsing. On by default; set false only if a model's template is broken.
+  jinja: true
+  chat_template_file: null  # optional local path to override a bad template
+  # Optional KV-cache quantization + Flash Attention (same semantics as the ssh
+  # block). Left off here by default; set cache types to e.g. "q8_0" (and
+  # flash_attn is then implied) to shrink KV memory for large local contexts.
+  cache_type_k: null
+  cache_type_v: null
+  flash_attn: null
+  seed: 42             # fixed seed for reproducibility
+  verbose: false
+
+# Generation settings applied to every request.
+# NOTE: Every test case is run as an independent, fresh chat session. Only a
+# [system, user] message pair is sent, and the KV cache is reset before each
+# call, so no context ever carries between cases (matches CTF session rules).
+generation:
+  max_tokens: 512
+  temperature: 0.0     # deterministic-ish for reproducible scoring
+  top_p: 1.0
+  repeat_penalty: 1.1
+
+# Which test suites to run. Each maps to a YAML file in config/tests/.
+tests:
+  - test1_auth_gating
+  - test2_string_manipulation

@@ -1,0 +1,24 @@
+# Virtual environment
+.venv/
+
+# Python caches
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Model files (large binaries)
+models/*
+
+# Run outputs
+results/*/
+
+# llama.cpp prebuilt binaries (any release/backend)
+llama-*-bin-win-*/
+
+# History database (local run index)
+bench.db
+bench.db/
+
+# Local benchmark config (contains private infra: hosts, IPs, paths).
+# Commit config/bench.example.yaml instead; copy it to bench.yaml locally.
+config/bench.yaml
