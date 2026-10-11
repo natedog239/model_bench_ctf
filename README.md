@@ -1,4 +1,24 @@
-# CTF Small-Model Benchmark Harness
+# Remote llama.cpp Model Manager + CTF Bench
+
+A generic manager for driving a remote (or local) [llama.cpp](https://github.com/ggml-org/llama.cpp)
+GPU box: it lists the remote `*.gguf` library, loads one model onto a stable HTTP
+endpoint, health-checks it, and lets you hot-swap to the next model on demand —
+freeing VRAM between loads. Point any external harness at the fixed endpoint, run
+your trials, then swap. Live stats probe the running server for its loaded context
+window and real prefill/decode tok/s.
+
+![Serve & hold — remote model-swap manager](manager.png)
+
+```
+python main.py --serve                # manual model-swap serve mode (no scoring)
+python main.py --serve --backend ssh  # go straight to the remote GPU box
+```
+
+See [Serve mode](#serve-mode-manual-model-swap) below for the full command set.
+
+---
+
+## CTF Small-Model Benchmark Harness
 
 A lightweight, automated harness for finding the smallest local GGUF model that
 can serve as the engine behind an AI-focused CTF. It runs each model through
