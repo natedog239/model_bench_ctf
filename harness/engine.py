@@ -262,6 +262,7 @@ def run_benchmark(config_path: str, cb: Callback = None,
         "models": [],
     }
 
+    from harness import profiles as _profiles
     for i, model_entry in enumerate(models, 1):
         if remote:
             from harness.runner import RemoteServerRunner
@@ -269,12 +270,20 @@ def run_benchmark(config_path: str, cb: Callback = None,
             model_path = runner.model_name
         elif ssh:
             from harness.runner import SshServerRunner
-            runner = SshServerRunner(model_entry, cfg.get("ssh", {}),
-                                     cfg["generation"])
+            # Merge any matching profile over the ssh block for THIS model, so a
+            # per-model profile (e.g. a smaller ctx for a heavy model) applies
+            # during a full benchmark run, not just serve mode.
+            eff_ssh = _profiles.resolve(
+                cfg.get("ssh", {}), cfg.get("profiles"),
+                os.path.basename(model_entry["path"]), "ssh")
+            runner = SshServerRunner(model_entry, eff_ssh, cfg["generation"])
             model_path = model_entry["path"]  # remote path, for the report
         else:
             model_path = model_entry
-            runner = _make_runner(backend, model_path, cfg["llama"],
+            eff_llama = _profiles.resolve(
+                cfg["llama"], cfg.get("profiles"),
+                os.path.basename(model_path), backend)
+            runner = _make_runner(backend, model_path, eff_llama,
                                    cfg["generation"])
         block = _run_model(runner, model_path, tests, flag, cb, i, len(models))
         results["models"].append(block)

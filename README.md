@@ -155,7 +155,7 @@ While a model is held, serve mode waits at a prompt (ssh backend shown; other
 backends offer a subset):
 
 ```
-serve> [n]ext  [r]eload  [u]nload  [s]tats  [t]ail-log  [i]nfo  [q]uit
+serve> [n]ext  [r]eload  [u]nload  [s]tats  [p]rofile  [t]ail-log  [i]nfo  [q]uit
 ```
 
 - **n** — pick a different model (unloads the current one first)
@@ -165,11 +165,63 @@ serve> [n]ext  [r]eload  [u]nload  [s]tats  [t]ail-log  [i]nfo  [q]uit
   window** (`/props`) and fires a tiny throwaway request to read llama.cpp's own
   `timings`, reporting **prefill** (prompt-eval tok/s) and **decode**
   (generation tok/s). Needs no server-side `--metrics` flag.
+- **p** — show the **fully-resolved llama-server flags** for the loaded model
+  (the exact argv, base block + any matched/selected profile + `extra_args`),
+  list available profiles, and switch profile live (reloads with the new flags).
 - **t** — tail the remote llama-server log over SSH (ssh backend only). Surfaces
   the per-request prompt-eval/eval timings your external harness is generating
   against the server (reads `/tmp/llama-server-<port>.log`).
 - **i** — reprint the endpoint + model info
 - **q** — unload and exit (always frees VRAM on the way out)
+
+## Flag profiles (any llama.cpp flag, per model)
+
+Every llama-server flag is config-driven — nothing is hardcoded in Python. Two
+layers let you see and manage any flag you want:
+
+**`extra_args` — the escape hatch.** On the `llama:` (local) and `ssh:` (remote)
+blocks, `extra_args` passes any llama-server flag verbatim, so you never have to
+edit code to use a flag the named keys don't cover (`--rope-freq-base`,
+`--tensor-split`, `--mlock`, `--override-kv`, ...). Three shapes are accepted:
+
+```yaml
+llama:
+  extra_args: {"--parallel": 4, "--mlock": true}   # dict: value true = presence flag
+  # extra_args: ["--parallel", "4", "--mlock"]      # list of tokens
+  # extra_args: "--parallel 4 --mlock"              # shell-style string
+```
+
+`extra_args` is appended **last**, so it overrides anything above for a repeated
+flag.
+
+**`profiles:` — named, per-model bundles.** A top-level `profiles:` map holds
+reusable override bundles. Each profile is a partial `llama:`/`ssh:` block (any
+key plus `extra_args`) merged over the base: scalars replace, `extra_args`
+appends. A profile auto-applies to models whose filename matches its `match:`
+glob(s), and `backends:` can restrict it (e.g. `[ssh]`):
+
+```yaml
+profiles:
+  gemma-big-ctx:            # auto-applies to gemma-* on the ssh box
+    match: "gemma-*"
+    backends: [ssh]
+    n_ctx: 49152
+    cache_type_k: "q8_0"
+    cache_type_v: "q8_0"
+  heavy-moe:                # trim ctx + limit slots for big MoE models
+    match: ["Qwen3*-27B-*", "*-30B-*", "*-35B-*"]
+    n_ctx: 16384
+    extra_args: {"--parallel": 2}
+  yarn-128k:                # no match: → select by name in serve-mode [p]rofile
+    n_ctx: 131072
+    extra_args: {"--rope-scaling": "yarn", "--yarn-orig-ctx": 32768}
+```
+
+Profiles are matched in file order (put specific patterns first). A profile with
+no `match:` is manual-only — pick it with the serve-mode **[p]** command. The
+same resolution applies during full benchmark runs, so a per-model profile
+(e.g. a smaller context for a heavy model) is honored there too, not just in
+serve mode. Leave `profiles: {}` to always use the base block.
 
 Note: the **s** probe sends one small request to the live server, so run it
 between harness trials rather than mid-run if you want clean isolation. Your

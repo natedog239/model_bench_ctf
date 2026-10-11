@@ -39,7 +39,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from harness import engine
+from harness import engine, profiles
 from harness.runner import (
     RemoteServerRunner,
     ServerRunner,
@@ -155,18 +155,43 @@ def _pick_model(console: Console, roster, backend: str):
 
 # ------------------------------------------------------------------ runner build
 
-def _build_runner(backend: str, cfg: dict, model_entry: dict):
-    """Construct (but do not load) the appropriate runner for a model entry."""
+def _resolve_block(backend: str, cfg: dict, model_entry: dict,
+                   selected_profile=None) -> dict:
+    """Return the backend block (llama:/ssh:) with the matching profile merged.
+
+    Centralizes profile resolution so both the runner build and the [p]rofile
+    display use identical effective settings. `remote` has no per-model block to
+    tune (one server, one model) so it is returned unchanged.
+    """
+    base_key = "ssh" if backend == "ssh" else "llama"
+    base = cfg.get(base_key, {}) or {}
+    if backend == "remote":
+        return dict(base)
+    name = model_entry.get("name") or (
+        os.path.basename(model_entry["path"]) if model_entry.get("path") else "")
+    return profiles.resolve(base, cfg.get("profiles"), name, backend,
+                            selected=selected_profile)
+
+
+def _build_runner(backend: str, cfg: dict, model_entry: dict,
+                  selected_profile=None):
+    """Construct (but do not load) the appropriate runner for a model entry.
+
+    The backend block is profile-resolved first, so the runner receives already
+    effective llama-server settings (base block + any matched/selected profile).
+    """
     gen_cfg = cfg.get("generation", {})
     if backend == "ssh":
+        eff = _resolve_block(backend, cfg, model_entry, selected_profile)
         return SshServerRunner(
             {"path": model_entry["path"], "size_bytes": model_entry["size_bytes"]},
-            cfg.get("ssh", {}), gen_cfg,
+            eff, gen_cfg,
         )
     if backend == "remote":
         return RemoteServerRunner(cfg.get("remote", {}), gen_cfg)
     if backend == "server":
-        return ServerRunner(model_entry["path"], cfg.get("llama", {}), gen_cfg)
+        eff = _resolve_block(backend, cfg, model_entry, selected_profile)
+        return ServerRunner(model_entry["path"], eff, gen_cfg)
     raise ValueError(
         f"Backend '{backend}' cannot serve a held model. Use 'ssh', 'server', "
         f"or 'remote'."
@@ -353,9 +378,9 @@ def _tail_remote_log(console: Console, cfg: dict, lines: int = 40) -> None:
 # ------------------------------------------------------------------ controller
 
 def _menu_prompt(console: Console, backend: str) -> str:
-    opts = r"\[n]ext model  \[r]eload  \[u]nload  \[s]tats  \[i]nfo  \[q]uit"
+    opts = r"\[n]ext model  \[r]eload  \[u]nload  \[s]tats  \[p]rofile  \[i]nfo  \[q]uit"
     if backend == "ssh":
-        opts = r"\[n]ext  \[r]eload  \[u]nload  \[s]tats  \[t]ail-log  \[i]nfo  \[q]uit"
+        opts = r"\[n]ext  \[r]eload  \[u]nload  \[s]tats  \[p]rofile  \[t]ail-log  \[i]nfo  \[q]uit"
     elif backend == "remote":
         opts = r"\[r]echeck  \[s]tats  \[i]nfo  \[q]uit"
     console.print(f"\n[bold magenta]serve>[/bold magenta] {opts}")
@@ -365,10 +390,17 @@ def _menu_prompt(console: Console, backend: str) -> str:
         return "q"
 
 
-def _load_and_hold(console: Console, backend: str, cfg: dict, model_entry: dict):
+def _load_and_hold(console: Console, backend: str, cfg: dict, model_entry: dict,
+                   selected_profile=None):
     """Build + load a runner, print the endpoint, and return the live runner.
     Returns None on failure (after cleaning up)."""
-    runner = _build_runner(backend, cfg, model_entry)
+    runner = _build_runner(backend, cfg, model_entry, selected_profile)
+    eff = _resolve_block(backend, cfg, model_entry, selected_profile)
+    prof_name = eff.get("_profile_name")
+    if prof_name:
+        console.print(f"[dim]profile:[/dim] [magenta]{prof_name}[/magenta]")
+    elif backend != "remote" and cfg.get("profiles"):
+        console.print("[dim]profile:[/dim] [dim](none matched; using base block)[/dim]")
     console.print(f"[cyan]loading[/cyan] {runner.model_name} ...")
     try:
         runner.load()
@@ -381,6 +413,64 @@ def _load_and_hold(console: Console, backend: str, cfg: dict, model_entry: dict)
         return None
     _print_serving(console, runner, backend, cfg, model_entry)
     return runner
+
+
+def _print_profile(console: Console, backend: str, cfg: dict, model_entry: dict,
+                   selected_profile=None) -> None:
+    """Show the fully-resolved llama-server flags for the current model.
+
+    This is the 'see any flag I want' view: it renders the exact argv the
+    runner builds (base block + matched/selected profile + extra_args), plus
+    which profile (if any) is active and what else is available.
+    """
+    if backend == "remote":
+        console.print("[yellow]remote backend hosts a server you started "
+                      "elsewhere; its flags aren't managed here.[/yellow]")
+        return
+
+    eff = _resolve_block(backend, cfg, model_entry, selected_profile)
+    name = eff.get("_profile_name")
+    server_bin = eff.get("server_bin", "<server_bin>")
+    model_path = model_entry.get("path") or model_entry.get("name") or "<model>"
+    http_port = eff.get("http_port", 8080)
+    argv = profiles.describe(eff, server_bin, model_path,
+                             remote=(backend == "ssh"), http_port=http_port)
+
+    body = Text()
+    body.append("model    ", style="dim")
+    body.append(f"{model_entry.get('name', '?')}\n", style="bold green")
+    body.append("profile  ", style="dim")
+    body.append(f"{name or '(none — base block)'}\n", style="bold magenta")
+    body.append("command  ", style="dim")
+    # One token per line indented, so long flag lists stay readable.
+    body.append(f"{os.path.basename(str(server_bin))}", style="white")
+    rest = argv[1:]
+    i = 0
+    while i < len(rest):
+        tok = rest[i]
+        if tok.startswith("-") and i + 1 < len(rest) and not rest[i + 1].startswith("-"):
+            body.append(f"\n           {tok} ", style="cyan")
+            body.append(rest[i + 1], style="white")
+            i += 2
+        else:
+            body.append(f"\n           {tok}", style="cyan")
+            i += 1
+    body.append("\n")
+
+    console.print(Panel(body, title="[bold magenta]:: RESOLVED llama-server FLAGS ::",
+                        border_style="magenta"))
+
+    profs = cfg.get("profiles") or {}
+    if profs:
+        avail = ", ".join(
+            f"[magenta]{n}[/magenta]" + (f" (match {p.get('match')})" if p.get("match") else "")
+            for n, p in profs.items()
+        )
+        console.print(f"[dim]available profiles:[/dim] {avail}")
+        console.print("[dim]type a profile name to switch (reloads), or Enter to keep.[/dim]")
+    else:
+        console.print("[dim]no profiles defined. Add a top-level 'profiles:' block "
+                      "in bench.yaml, or set 'extra_args' on the llama:/ssh: block.[/dim]")
 
 
 def _unload(console: Console, runner) -> None:
@@ -424,7 +514,11 @@ def run_serve(config_path: str, backend_override=None) -> None:
         console.print("[dim]no model selected; exiting serve mode.[/dim]")
         return
 
-    runner = _load_and_hold(console, backend, cfg, current)
+    # Explicit profile override; None = auto-match by model name. Switching
+    # profiles live reloads the model with the new flag set.
+    selected_profile = None
+
+    runner = _load_and_hold(console, backend, cfg, current, selected_profile)
 
     try:
         while True:
@@ -447,6 +541,23 @@ def run_serve(config_path: str, backend_override=None) -> None:
                     console.print("[dim]nothing is being served right now.[/dim]")
                 continue
 
+            if cmd in ("p", "profile", "profiles"):
+                _print_profile(console, backend, cfg, current, selected_profile)
+                if backend != "remote" and (cfg.get("profiles")):
+                    choice = input("profile > ").strip()
+                    if choice and choice.lower() not in ("c", "cancel", "keep"):
+                        if choice not in (cfg.get("profiles") or {}):
+                            console.print(f"[yellow]no profile named '{choice}'. "
+                                          f"keeping current.[/yellow]")
+                        else:
+                            selected_profile = choice
+                            console.print(f"[cyan]switching to profile[/cyan] "
+                                          f"[magenta]{choice}[/magenta] (reloading)...")
+                            _unload(console, runner)
+                            runner = _load_and_hold(console, backend, cfg,
+                                                    current, selected_profile)
+                continue
+
             if cmd in ("t", "tail", "tail-log", "log"):
                 if backend != "ssh":
                     console.print("[yellow]log tailing is only available for the "
@@ -462,7 +573,8 @@ def run_serve(config_path: str, backend_override=None) -> None:
 
             if cmd in ("r", "reload", "recheck"):
                 _unload(console, runner)
-                runner = _load_and_hold(console, backend, cfg, current)
+                runner = _load_and_hold(console, backend, cfg, current,
+                                        selected_profile)
                 continue
 
             if cmd in ("n", "next"):
@@ -476,7 +588,10 @@ def run_serve(config_path: str, backend_override=None) -> None:
                     continue
                 _unload(console, runner)
                 current = pick
-                runner = _load_and_hold(console, backend, cfg, current)
+                # New model: drop the explicit profile and auto-match again.
+                selected_profile = None
+                runner = _load_and_hold(console, backend, cfg, current,
+                                        selected_profile)
                 continue
 
             console.print("[yellow]unrecognized command.[/yellow]")

@@ -242,51 +242,20 @@ class ServerRunner(_HttpChatMixin):
         self._port = _free_port()
         self._base_url = f"http://127.0.0.1:{self._port}"
 
-        # -1 in llama-cpp-python means "all layers"; the server uses a large
-        # number to mean the same, so normalize.
-        ngl = self.llama_cfg.get("n_gpu_layers", 999)
-        if ngl is None or ngl < 0:
-            ngl = 999
-
         # Use an absolute model path: the server runs with cwd set to its own
         # directory (so it finds its DLLs), which would break a relative path.
         abs_model = os.path.abspath(self.model_path)
 
-        cmd = [
-            server_bin,
-            "--model", abs_model,
-            "--n-gpu-layers", str(ngl),
-            "--ctx-size", str(self.llama_cfg.get("n_ctx", 4096)),
-            "--port", str(self._port),
-            "--host", "127.0.0.1",
-        ]
-        n_threads = self.llama_cfg.get("n_threads")
-        if n_threads:
-            cmd += ["--threads", str(n_threads)]
-
-        # --jinja activates the model's own chat template (from GGUF metadata),
-        # required for correct tool/function-call parsing. Default on. An
-        # optional chat_template_file overrides a model's bundled template.
-        if self.llama_cfg.get("jinja", True):
-            cmd.append("--jinja")
-            tmpl = self.llama_cfg.get("chat_template_file")
-            if tmpl:
-                cmd += ["--chat-template-file", str(tmpl)]
-
-        # Flash Attention + KV-cache quantization (q8_0 roughly halves KV memory
-        # vs f16, enabling large contexts). llama.cpp needs Flash Attention for
-        # a quantized KV cache, so enable it implicitly when a cache type is set.
-        cache_k = self.llama_cfg.get("cache_type_k")
-        cache_v = self.llama_cfg.get("cache_type_v")
-        fa = self.llama_cfg.get("flash_attn")
-        if fa is None and (cache_k or cache_v):
-            fa = "on"
-        if fa is not None:
-            cmd += ["--flash-attn", str(fa)]
-        if cache_k:
-            cmd += ["--cache-type-k", str(cache_k)]
-        if cache_v:
-            cmd += ["--cache-type-v", str(cache_v)]
+        # Build every llama-server flag from the (profile-resolved) config via
+        # the shared builder, then append the local host/port the free-port
+        # logic above chose. build_cli handles n_gpu_layers normalization,
+        # flash-attn/KV coupling, jinja, device, and the extra_args escape hatch.
+        from harness import profiles
+        cmd = profiles.build_cli(
+            server_bin, abs_model, self.llama_cfg,
+            remote=False, quote=lambda s: s,
+        )
+        cmd += ["--host", "127.0.0.1", "--port", str(self._port)]
 
         # Run the server from its own directory so it finds its ggml-*.dll files.
         cwd = os.path.dirname(os.path.abspath(server_bin))
@@ -519,59 +488,20 @@ class SshServerRunner(_HttpChatMixin):
         if not server_bin:
             raise ValueError("ssh.server_bin is required for the 'ssh' backend.")
 
-        ngl = c.get("n_gpu_layers", 999)
-        if ngl is None or ngl < 0:
-            ngl = 999
+        # Default device to the v620 (Vulkan1) when the ssh block doesn't set
+        # one, preserving prior behavior, then let build_cli render everything
+        # (SPEC flags, device/split-mode, --fit, flash-attn/KV coupling, jinja,
+        # and the extra_args escape hatch) with shell quoting for the remote.
+        cfg = dict(c)
+        cfg.setdefault("device", "Vulkan1")
+        cfg.setdefault("fit", True)
 
-        parts = [
-            shlex.quote(server_bin),
-            "--model", shlex.quote(self.model_path),
-            "--n-gpu-layers", str(ngl),
-            "--ctx-size", str(c.get("n_ctx", 4096)),
-            "--host", "0.0.0.0",
-            "--port", str(self._http_port),
-        ]
-
-        # Pin the GPU. Default to the v620 (Vulkan1); use split-mode none so it
-        # never tries to spill onto the small 3070.
-        device = c.get("device", "Vulkan1")
-        if device:
-            parts += ["--device", str(device), "--split-mode", "none"]
-
-        # --fit on lets llama-server auto-trim unset args to fit device memory,
-        # a safety net against OOM on the largest models.
-        if c.get("fit", True):
-            parts += ["--fit", "on"]
-
-        # --jinja activates the model's own chat template (from GGUF metadata),
-        # which is required for correct tool/function-call parsing. Default on.
-        # An optional chat_template_file overrides a model's (sometimes broken)
-        # bundled template; it is a path ON THE REMOTE HOST.
-        if c.get("jinja", True):
-            parts.append("--jinja")
-            tmpl = c.get("chat_template_file")
-            if tmpl:
-                parts += ["--chat-template-file", shlex.quote(str(tmpl))]
-
-        # Flash Attention + KV-cache quantization. Quantizing the KV cache
-        # (e.g. q8_0) roughly halves KV memory vs f16, which is what makes large
-        # contexts (32K+) fit on the v620. llama.cpp requires Flash Attention
-        # for a quantized KV cache, so turn it on whenever a cache type is set.
-        cache_k = c.get("cache_type_k")
-        cache_v = c.get("cache_type_v")
-        fa = c.get("flash_attn")
-        if fa is None and (cache_k or cache_v):
-            fa = "on"  # KV quant needs flash attention; enable it implicitly
-        if fa is not None:
-            parts += ["--flash-attn", str(fa)]
-        if cache_k:
-            parts += ["--cache-type-k", str(cache_k)]
-        if cache_v:
-            parts += ["--cache-type-v", str(cache_v)]
-
-        n_threads = c.get("n_threads")
-        if n_threads:
-            parts += ["--threads", str(n_threads)]
+        from harness import profiles
+        parts = profiles.build_cli(
+            server_bin, self.model_path, cfg,
+            remote=True, quote=shlex.quote,
+        )
+        parts += ["--host", "0.0.0.0", "--port", str(self._http_port)]
 
         server_cmd = " ".join(parts)
         bin_dir = os.path.dirname(server_bin) or "."
